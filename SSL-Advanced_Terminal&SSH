@@ -1,0 +1,7 @@
+###Putty KeyGen for SSH Advanced & Terminal for Home Assistant with SSL
+This is a tricky little protocol to get to work but I figured it out.
+The documentation is horrible for this addon but this will allow you to use
+a password protected SSL for the Add-On
+
+##In Putty KeyGen:
+
