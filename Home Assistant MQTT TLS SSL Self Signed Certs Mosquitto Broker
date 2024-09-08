@@ -1,0 +1,85 @@
+# self-signed-certficates-tls-ssl-home-assistant-openssl-mosquitto-broker-mqtt-integration
+Guide on creating openssl certificates for server and client that are self signed.  Primarily for use in the Mosquitto Broker addon in home assistant and the MQTT integration.
+
+Doing this because Home Assistant sucks at providing directions.
+
+###Server Certificate Generation###
+
+1. create ca.crt and ca.pem
+     openssl genrsa -des3 -out ca.key 2048
+     enter passphrase for pem:  #Keep track of this, you will need it again
+     re-enterpassphrase for pem: #Same password for above#
+     #ca.crt# <----Where you must pay attention
+     openssl req -new -x509 -days 36500 -key ca.key -out ca.crt
+        enter passphrase for pem: #same password as before
+        enter country code: #keep consistent throughout all certificates#
+        enter state name(full): #keep consistent throughout all certificates#
+        enter locality: #keep consistent throughout all certificates#
+        enter organization name # "your home assistant machine name" #this needs to be consistent throughout all certficiates#
+        enter organizational unit name: "something unique"
+        enter CN: "machinename.local" #especially important and consistent throughout all the certificates#
+
+2. generate the server.crt and server.pem
+     openssl genrsa -out server.key 2048
+     openssl req -new -out server.csr -key server.key
+        enter country code: #same as ca.crt#
+        enter state name(full): #same as ca.crt#
+        enter locality:  #same as ca.crt#
+        enter organization name: #same as ca.crt use Home Assistant machine name#
+        enter organizational unit name: #unique name#
+        enter CN: "machinename.local#
+           #create a v3.ext file#
+             nano /usr/share/hassio/ssl/v3.ext
+             ***copy paste into v3.ext***
+                authorityKeyIdentifier=keyid,issuer
+                basicConstraints=CA:FALSE
+                keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+                subjectAltName = @alt_names
+                
+                [alt_names]
+                DNS.1 = machinename.local
+                IP.1 = yourhomeassistantmachineipaddress
+
+     sudo openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 36500 -extfile v3.ext
+        Enter password for CA.Key generated earlier
+     cat server.crt ca.crt > server_with_chain.pem: #Use this for the cafile for the Mosquitto Broker Addon#
+
+4. generate mqtt integration client.crt - #Same steps as creating one for each MQTT device#
+      openssl genpkey -algorithm RSA -out client.key -pkeyopt rsa_keygen_bits:2048
+      openssl req -new -key client.key -out client.csr
+        enter country code: #same as ca.crt and server.crt#
+        enter state name(full): #same as ca.crt and server.crt#
+        enter locality: #same as ca.crt and server.crt#
+        enter organization name: #machine name / same as ca.crt and server.crt#
+        enter organizational unit name: #something unique#
+        enter CN: #machinename.local#
+      openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 36500 -sha256
+        enter passphrase for pem:
+      openssl x509 -in client.crt -out client.pem #makes pem files if needed, in my case using for Micropython#
+      openssl rsa -in client.key -out client-key.pem #makes pem files if needed, in my case using for Micropython#
+      openssl x509 -in ca.crt -out ca.pem #makes pem files if needed, in my case using for Micropython#
+
+Mosquitto Broker Configuration via GUI:
+
+logins: []
+require_certificate: true
+certfile: server_with_chain.pem
+keyfile: server.key
+customize:
+  active: false
+  folder: mosquitto
+cafile: ca.crt
+tls_version: tlsv1.2
+
+MQTT-Integration Settings:
+
+broker: machinename.local #must match the CN#
+port: 8883
+username: Home Assistant username for the account you should have setup - same process as a normal HA user.
+password: Password for the Home Assistant user
+client id: left this blank
+use client certificate: ON
+broker certificate validation: Custom
+MQTT Protocol: left at 3.1.1
+MQTT Transport: TCP
+*Make sure to upload the ca.crt, client.key and client.cert to the appropriate boxes in the GUI*
