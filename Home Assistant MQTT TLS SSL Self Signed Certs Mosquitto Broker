@@ -3,6 +3,15 @@ Guide on creating openssl certificates for server and client that are self signe
 
 Doing this because Home Assistant sucks at providing directions.
 
+***Helpful notes:***
+Default certificate location:     /usr/share/hassio/ssl
+      Enter Docker Container:     (If needed)
+              Get docker id#:     docker ps
+                Enter docker:     docker exec -it <container id> /bin/bash
+     
+     #There is no need to alter mosquitto.conf#
+
+
 ###Server Certificate Generation###
 
 1. create ca.crt and ca.pem
