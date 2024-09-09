@@ -6,15 +6,15 @@ import time
 import machine
 import lidar
 
-SSID = 'NoMooching'
-PASSWORD = 'Windows1$'
-broker_username = 'doorbell' 
-broker_password = 'Doorbell46239$'
-server='defense.local'      # this has to match the MQTT server CN or SAN credentials in server_crt.pem
+SSID = 'xxxxxx'
+PASSWORD = 'xxxxxxxxxx'
+broker_username = 'xxxxxxx' 
+broker_password = 'xxxxxxxxx'
+server='xxxxxxxxxx'      #machinename.local
 server_port=8883
 server_keepalive=60     # if you don't include a keepalive nothing works.
-mqtt_topic= 'gate/lidar_alert'
-local_client_name='lidar'
+mqtt_topic= '#########'
+local_client_name='XXXXXXXx'
 
 class const:
     DIST_LOW = 0x00
