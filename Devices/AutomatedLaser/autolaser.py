@@ -16,20 +16,31 @@ calib_data = np.load("/home/laser/new_calib.npz")
 mtx = calib_data["mtx"]
 dist = calib_data["dist"]
 
-# Servo constants
+# Pan servo constants
 PAN_PIN = 18
 PWM_FREQ = 50
 PAN_FOV = 141.0
-PAN_CENTER = 70.5  # Midpoint in degrees
+PAN_CENTER = 70.5
+
+# Tilt servo constants
+TILT_PIN = 24
+TILT_FOV = 81.67
+TILT_CENTER = 40.835
 
 running = True
 
-# Servo setup—once, outside loop
+# Pan servo setup
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(PAN_PIN, GPIO.OUT)
 pan_pwm = GPIO.PWM(PAN_PIN, PWM_FREQ)
-pan_pwm.start(0)  # Start off, no signal
-print("Servo initialized, off")
+pan_pwm.start(0)
+print("Pan servo initialized, off")
+
+# Tilt servo setup
+GPIO.setup(TILT_PIN, GPIO.OUT)
+tilt_pwm = GPIO.PWM(TILT_PIN, PWM_FREQ)
+tilt_pwm.start(0)
+print("Tilt servo initialized, off")
 
 print("Starting up")
 if not os.path.isfile(HEF_PATH):
@@ -90,7 +101,7 @@ with hailort.VDevice() as vdevice:
                                     ymax = int(det[2] * 1080)
                                     xmax = int(det[3] * 1920)
                                     cv2.rectangle(frame_full, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-                                    # Servo action—only here
+                                    # Pan servo action
                                     xmin = det[1] * 640
                                     xmax = det[3] * 640
                                     x_pixel = (xmin + xmax) / 2
@@ -98,18 +109,34 @@ with hailort.VDevice() as vdevice:
                                     points = points.reshape(-1, 1, 2)
                                     undistorted = cv2.undistortPoints(points, mtx, dist, None, mtx)
                                     pan_pixels_per_degree = 640 / PAN_FOV
-                                    # Flip direction: subtract instead of add
                                     pan_angle = max(0, min(PAN_CENTER - ((undistorted[0, 0, 0] - 320) / pan_pixels_per_degree), PAN_FOV))
                                     print(f"PERSON DETECTED: x={x_pixel:.2f}, pan={pan_angle:.2f}")
-                                    duty = pan_angle / 18 + 2  # Your working duty cycle
+                                    pan_duty = pan_angle / 18 + 2
                                     GPIO.output(PAN_PIN, True)
-                                    pan_pwm.ChangeDutyCycle(duty)
-                                    time.sleep(0.5)  # Settle like your script
+                                    pan_pwm.ChangeDutyCycle(pan_duty)
+                                    time.sleep(0.5)
                                     GPIO.output(PAN_PIN, False)
-                                    pan_pwm.ChangeDutyCycle(0)  # Cut signal
+                                    pan_pwm.ChangeDutyCycle(0)
+                                    # Tilt servo action
+                                    ymin = det[0] * 640
+                                    ymax = det[2] * 640
+                                    y_pixel = (ymin + ymax) / 2
+                                    points = np.array([[320, y_pixel]], dtype=np.float32)  # Use 320 for x (center)
+                                    points = points.reshape(-1, 1, 2)
+                                    undistorted = cv2.undistortPoints(points, mtx, dist, None, mtx)
+                                    tilt_pixels_per_degree = 640 / TILT_FOV
+                                    tilt_angle = max(0, min(TILT_CENTER - ((undistorted[0, 0, 1] - 320) / tilt_pixels_per_degree), TILT_FOV))
+                                    print(f"PERSON DETECTED: y={y_pixel:.2f}, tilt={tilt_angle:.2f}")
+                                    tilt_duty = tilt_angle / 18 + 2  # Same duty calc as pan
+                                    GPIO.output(TILT_PIN, True)
+                                    tilt_pwm.ChangeDutyCycle(tilt_duty)
+                                    time.sleep(0.5)
+                                    GPIO.output(TILT_PIN, False)
+                                    tilt_pwm.ChangeDutyCycle(0)
                                 else:
-                                    print("No person—servo stays put")
-                                    pan_pwm.ChangeDutyCycle(0)  # Ensure off when idle
+                                    print("No person—servos stay put")
+                                    pan_pwm.ChangeDutyCycle(0)
+                                    tilt_pwm.ChangeDutyCycle(0)
 
             print("Loop ran")
             cv2.imshow("Tracking", frame_full)
@@ -120,9 +147,12 @@ with hailort.VDevice() as vdevice:
     picam2.stop()
     running = False
     pan_pwm.ChangeDutyCycle(0)
+    tilt_pwm.ChangeDutyCycle(0)
     time.sleep(0.1)
     pan_pwm.stop()
+    tilt_pwm.stop()
     GPIO.output(PAN_PIN, GPIO.LOW)
+    GPIO.output(TILT_PIN, GPIO.LOW)
     GPIO.cleanup()
     cv2.destroyAllWindows()
     print("Cleanup done")
