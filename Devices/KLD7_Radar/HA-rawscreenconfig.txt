@@ -1,0 +1,79 @@
+title: Home
+views:
+  - title: Overview
+    path: overview
+    panel: true
+    cards:
+      - type: vertical-stack
+        cards:
+          - type: picture-elements
+            image: /local/radarbackground.png
+            card_mod:
+              style: |
+                ha-card {
+                  --point_1-top: {{ states('sensor.radar_point_1_y') | default('-4') }}%;
+                  --point_1-left: {{ states('sensor.radar_point_1_x') | default('-4') }}%;
+                  --point_2-top: {{ states('sensor.radar_point_2_y') | default('-4') }}%;
+                  --point_2-left: {{ states('sensor.radar_point_2_x') | default('-4') }}%;
+                  --point_3-top: {{ states('sensor.radar_point_3_y') | default('-4') }}%;
+                  --point_3-left: {{ states('sensor.radar_point_3_x') | default('-4') }}%;
+                  --point_4-top: {{ states('sensor.radar_point_4_y') | default('-4') }}%;
+                  --point_4-left: {{ states('sensor.radar_point_4_x') | default('-4') }}%;
+                }
+            elements:
+              - type: image
+                entity: sensor.radar_kld7_radar_point_1
+                image: /local/radaricon.png
+                style:
+                  width: 5%
+                  top: var(--point_1-top)
+                  left: var(--point_1-left)
+                  display: >
+                    {% if states('sensor.radar_point_1_x') | float > 0 and
+                    states('sensor.radar_point_1_y') | float > 0 %}
+                      block
+                    {% else %}
+                      none
+                    {% endif %}
+              - type: image
+                entity: sensor.radar_kld7_radar_point_2
+                image: /local/dnc.png
+                style:
+                  width: 5%
+                  top: var(--point_2-top)
+                  left: var(--point_2-left)
+                  display: >
+                    {% if states('sensor.radar_point_2_x') | float > 0 and
+                    states('sensor.radar_point_2_y') | float > 0 %}
+                      block
+                    {% else %}
+                      none
+                    {% endif %}
+              - type: image
+                entity: sensor.radar_kld7_radar_point_3
+                image: /local/aoc.png
+                style:
+                  width: 5%
+                  top: var(--point_3-top)
+                  left: var(--point_3-left)
+                  display: >
+                    {% if states('sensor.radar_point_3_x') | float > 0 and
+                    states('sensor.radar_point_3_y') | float > 0 %}
+                      block
+                    {% else %}
+                      none
+                    {% endif %}
+              - type: image
+                entity: sensor.radar_kld7_radar_point_4
+                image: /local/klaus.png
+                style:
+                  width: 5%
+                  top: var(--point_4-top)
+                  left: var(--point_4-left)
+                  display: >
+                    {% if states('sensor.radar_point_4_x') | float > 0 and
+                    states('sensor.radar_point_4_y') | float > 0 %}
+                      block
+                    {% else %}
+                      none
+                    {% endif %}
