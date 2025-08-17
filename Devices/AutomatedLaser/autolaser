@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+import sys
+import os
+import time
+import threading
+from queue import Queue, Empty, Full
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import hailo_platform.pyhailort.pyhailort as hailort
+from adafruit_servokit import ServoKit
+import board
+import busio
+import RPi.GPIO as GPIO
+import signal
+
+# Claim GPIO and default it to LOW on startup
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(24, GPIO.OUT, initial=GPIO.LOW)
+
+def fail_dark(*_):
+    try:
+        GPIO.output(24, GPIO.LOW)
+    except Exception:
+        pass
+    GPIO.cleanup()
+    sys.exit(0)
+
+# Catch Ctrl+C and termination signals
+signal.signal(signal.SIGINT, fail_dark)
+signal.signal(signal.SIGTERM, fail_dark)
+
+# —— Configuration & Calibration ——————————————
+HEF_PATH = "/home/laser/models/yolov11s.hef"
+calib = np.load("/home/laser/new_calib.npz")
+mtx, dist = calib["mtx"], calib["dist"]
+LORES_W, LORES_H = 640, 640
+MAIN_W, MAIN_H = 1920, 1080
+PAN_GAIN = 1.3
+PCA_FREQ_HZ = 50
+PAN_CH, TILT_CH = 0, 1
+PAN_FOV_DEG = 141.4
+PAN_MIN_DEG = 70.7
+PAN_MAX_DEG = 205.7
+PAN_CENTER_DEG = (PAN_MIN_DEG + PAN_MAX_DEG) / 2.0
+TILT_FOV_DEG = 81.7
+TILT_MIN_DEG = 148.5
+TILT_MAX_DEG = 230.2
+TILT_HOME_DEG = 148.5
+TILT_OFFSET_DEG = 0.0
+CONF_THRESHOLD = 0.5
+RETURN_HOME_DELAY = 5.0
+PAN_SMOOTH = 0.25
+TILT_SMOOTH = 0.25
+MODEL_INPUT_BGR = True  # set False if model expects RGB
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(24, GPIO.OUT)
+GPIO.output(24, GPIO.LOW)
+
+
+
+
+# —— Utility functions ————————————————
+def clamp(val, mn, mx):
+    return max(mn, min(mx, val))
+
+def swap_queue(q, item):
+    try:
+        q.put_nowait(item)
+    except Full:
+        try:
+            q.get_nowait()
+            q.put_nowait(item)
+        except Empty:
+            pass
+
+def pixel_to_servo_angles(x_px, y_px):
+    pts = np.array([[[x_px, y_px]]], dtype=np.float32)
+    und = cv2.undistortPoints(pts, mtx, dist, P=mtx)
+    ux, uy = und[0,0]
+    deg_px_x = (PAN_FOV_DEG / LORES_W) * PAN_GAIN
+    dx = (ux - LORES_W/2) * deg_px_x
+    pan_cmd = clamp(PAN_CENTER_DEG - dx, PAN_MIN_DEG, PAN_MAX_DEG)
+    deg_px_y = TILT_FOV_DEG / LORES_H
+    dy = (uy - LORES_H/2) * deg_px_y
+    tilt_cmd = clamp(TILT_MIN_DEG + dy + TILT_OFFSET_DEG, TILT_MIN_DEG, TILT_MAX_DEG)
+    return pan_cmd, tilt_cmd
+
+# —— Threads —————————————————
+def ai_inference_thread(picam2, ng, in_params, out_params, servo_q, post_q, stop_evt):
+    print("AI inference thread started")
+    last_seen = time.time()
+    homed = False
+    frame_count = 0
+    last_fps_time = time.time()
+    prev_pan = PAN_CENTER_DEG
+    prev_tilt = TILT_HOME_DEG
+
+    # Preallocate model input buffer
+    in_buf = np.empty((1, LORES_H, LORES_W, 3), dtype=np.uint8)
+
+    with hailort.InferVStreams(ng, in_params, out_params) as inf:
+        while not stop_evt.is_set():
+            try:
+                now = time.time()
+                frame_count += 1
+                if now - last_fps_time >= 5.0:
+                    fps = frame_count / (now - last_fps_time)
+                    print(f"AI thread: {fps:.1f} FPS")
+                    frame_count = 0
+                    last_fps_time = now
+
+                # Single synchronized capture of both streams
+                req = picam2.capture_request()
+                full = req.make_array("main")
+                lores = req.make_array("lores")
+                req.release()
+
+                # Prepare model input
+                if MODEL_INPUT_BGR:
+                    cv2.cvtColor(lores, cv2.COLOR_RGB2BGR, dst=in_buf[0])
+                else:
+                    np.copyto(in_buf[0], lores)
+
+                # Inference
+                dets_out = inf.infer(in_buf).get('yolov11s/yolov8_nms_postprocess', [])
+                results = []
+                if isinstance(dets_out, list) and dets_out and isinstance(dets_out[0], list) and dets_out[0]:
+                    arr = dets_out[0][0]
+                    results = [d for d in arr if d[4] >= CONF_THRESHOLD]
+
+                if results:
+                    last_seen = now
+                    homed = False
+                    GPIO.output(24, GPIO.HIGH)
+                    boxes = sorted(results, key=lambda d: (d[2]-d[0])*(d[3]-d[1]), reverse=True)
+                    y1, x1, y2, x2, _ = boxes[0]
+                    x_px = ((x1 + x2) / 2.0) * LORES_W
+                    y_px = ((y1 + y2) / 2.0) * LORES_H
+                    pan_ang, tilt_ang = pixel_to_servo_angles(x_px, y_px)
+
+                    # Apply smoothing
+                    pan_ang = PAN_SMOOTH * pan_ang + (1.0 - PAN_SMOOTH) * prev_pan
+                    tilt_ang = TILT_SMOOTH * tilt_ang + (1.0 - TILT_SMOOTH) * prev_tilt
+                    prev_pan, prev_tilt = pan_ang, tilt_ang
+
+                    swap_queue(servo_q, (pan_ang, tilt_ang))
+                    swap_queue(post_q, (full, results))
+                elif not homed and (now - last_seen) > RETURN_HOME_DELAY:
+                    GPIO.output(24, GPIO.LOW)
+                    swap_queue(servo_q, (PAN_CENTER_DEG, TILT_HOME_DEG))
+                    homed = True
+                    print(f"No target for {RETURN_HOME_DELAY}s → homing")
+                    swap_queue(post_q, (full, []))
+                else:
+                    swap_queue(post_q, (full, []))
+
+            except Exception as e:
+                print(f"AI thread error: {e}")
+                time.sleep(0.01)
+
+    print("AI inference thread stopped")
+
+def post_processing_thread(post_q, disp_q, stop_evt):
+    print("Post-processing thread started")
+    while not stop_evt.is_set():
+        try:
+            full_frame, boxes = post_q.get(timeout=0.1)
+            for y1, x1, y2, x2, conf in boxes:
+                cv2.rectangle(full_frame, (int(x1*MAIN_W), int(y1*MAIN_H)),
+                              (int(x2*MAIN_W), int(y2*MAIN_H)), (0, 255, 0), 2)
+                cv2.putText(full_frame, f"{conf:.2f}", (int(x1*MAIN_W), int(y1*MAIN_H)-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            swap_queue(disp_q, full_frame)
+        except Empty:
+            continue
+    print("Post-processing thread stopped")
+
+def servo_worker_thread(kit, servo_q, stop_evt):
+    print("Servo worker thread started")
+    while not stop_evt.is_set():
+        try:
+            pan_ang, tilt_ang = servo_q.get(timeout=0.1)
+            kit.servo[PAN_CH].angle = pan_ang
+            kit.servo[TILT_CH].angle = tilt_ang
+        except Empty:
+            continue
+    print("Servo worker thread stopped")
+
+# —— Main —————————————————————————————
+def main():
+    if not os.path.isfile(HEF_PATH):
+        print(f"ERROR: HEF file not found at {HEF_PATH}")
+        return
+    servo_q, post_q, disp_q = Queue(1), Queue(1), Queue(1)
+    stop_evt = threading.Event()
+
+    i2c = busio.I2C(board.SCL, board.SDA)
+    kit = ServoKit(channels=16, i2c=i2c, address=0x40, frequency=PCA_FREQ_HZ)
+    for ch, angle in [(PAN_CH, PAN_CENTER_DEG), (TILT_CH, TILT_HOME_DEG)]:
+        kit.servo[ch].actuation_range = 270
+        kit.servo[ch].set_pulse_width_range(500, 2500)
+        kit.servo[ch].angle = angle
+    time.sleep(1)  # Allow servos to settle
+
+    # Camera configuration
+    picam2 = Picamera2()
+    config = picam2.create_video_configuration(
+        main={"size": (MAIN_W, MAIN_H), "format": "XRGB8888"},
+        lores={"size": (LORES_W, LORES_H), "format": "RGB888"}
+    )
+    picam2.configure(config)
+    picam2.start()
+
+    with hailort.VDevice() as vdev:
+        hef = hailort.HEF(HEF_PATH)
+        ng = vdev.configure(hef)[0]
+        in_params = hailort.InputVStreamParams.make(ng, format_type=hailort.FormatType.UINT8)
+        out_params = hailort.OutputVStreamParams.make(ng, format_type=hailort.FormatType.FLOAT32)
+
+        # === PRE-WARM ONLY ===
+        # Pre-warm camera ISP and driver buffers (~0.25s @ 30fps)
+        for _ in range(8):
+            req = picam2.capture_request()
+            req.release()
+
+        # Pre-warm Hailo pipeline (short-lived activation; run a few dummy inferences)
+        with ng.activate():
+            with hailort.InferVStreams(ng, in_params, out_params) as inf_warm:
+                dummy = np.zeros((1, LORES_H, LORES_W, 3), dtype=np.uint8)
+                for _ in range(4):
+                    inf_warm.infer(dummy)
+        # === END PRE-WARM ===
+
+
+        with ng.activate():
+            print("Starting threaded tracking system...")
+            ai_thread = threading.Thread(
+                target=ai_inference_thread,
+                args=(picam2, ng, in_params, out_params, servo_q, post_q, stop_evt),
+                daemon=True
+            )
+            post_thread = threading.Thread(
+                target=post_processing_thread,
+                args=(post_q, disp_q, stop_evt),
+                daemon=True
+            )
+            servo_thread = threading.Thread(
+                target=servo_worker_thread,
+                args=(kit, servo_q, stop_evt),
+                daemon=True
+            )
+
+            ai_thread.start()
+            post_thread.start()
+            servo_thread.start()
+
+            print("All threads started. Press 'q' to quit.")
+            try:
+                while not stop_evt.is_set():
+                    try:
+                        frame = disp_q.get(timeout=0.05)
+                        cv2.imshow("Tracking", frame)
+                    except Empty:
+                        pass
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        print("Quit requested...")
+                        break
+            finally:
+                print("Stopping threads...")
+                stop_evt.set()
+                ai_thread.join(timeout=2.0)
+                post_thread.join(timeout=2.0)
+                servo_thread.join(timeout=2.0)
+
+    print("Cleaning up...")
+    picam2.stop()
+    try:
+        kit._pca.deinit()
+    except Exception:
+        pass
+    GPIO.cleanup()
+    cv2.destroyAllWindows()
+    print("Shutdown complete.")
+
+if __name__ == "__main__":
+    main()
+
