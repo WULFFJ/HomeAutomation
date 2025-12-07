@@ -1,7 +1,7 @@
 Automated-Doorbell
 This is a python script, which accomplishes the following:
 
-PIR sensor will detect someone walking up to the front door within about 12-15 feet
+Radxa Zero 3 - RKNU RKNN AI 
 Once detected a "Gong" sound goes off
 The first motion detection saves an image
 The second motion detection sends an image to a Telegram channel where you get a picture of the person
