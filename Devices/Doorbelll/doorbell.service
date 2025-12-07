@@ -1,0 +1,16 @@
+[Unit]
+Description=Doorbell Service
+After=network.target multi-user.target
+
+[Service]
+Type=simple
+User=homeaccount
+Restart=always
+RestartSec=5s
+ExecStart=/usr/bin/python3 /home/homeaccount/myapp/yolo11/python/doorbell.py
+Environment="PYTHONPATH=/home/homeaccount/myapp/"
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
