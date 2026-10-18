@@ -1,33 +1,47 @@
-
+###HC-12 433MHZ Gate Receiver
 import time
 import serial
 import paho.mqtt.client as mqtt
 
 # ==========================================
-# CONFIGURATION
+# USER SETTINGS - EDIT THESE
 # ==========================================
 
+# Pi 5 HC-12 receiver
 SERIAL_PORT = "/dev/ttyAMA4"
 BAUD_RATE = 9600
 
+# MQTT broker
 MQTT_BROKER = "YOURLOCALIP"
 MQTT_PORT = 8883
 MQTT_USERNAME = "Gate"
-MQTT_PASSWORD = "PUT_YOUR_PASSWORD_HERE"
+MQTT_PASSWORD = "MQTTPASSWORD"
 
+# Existing MQTT certificates
 CA_CERTS = "/path_to/ca.crt"
-CLIENT_CERT = "/path_toe/client.crt"
+CLIENT_CERT = "/path_to/client.crt"
 CLIENT_KEY = "/path_to/client.key"
 
+# Home Assistant MQTT sensor
 STATE_TOPIC = "gate/gate_is_open"
 ALERT_TOPIC = "gate/gate_alert"
+MQTT_ON = "ON"
+MQTT_OFF = "OFF"
 
+# Three alerts: immediately, 15 sec, 30 sec
 ALERT_TIMES = (0, 15, 30)
 
-# ==========================================
-# VERIFIED RADIO PACKETS
-# ==========================================
+# No new alarm until radio has been quiet
+# for this many seconds and all alerts finish
+REARM_SILENCE = 10
 
+# False = leave HA sensor ON after alerts
+# True = send OFF after all three alerts
+SEND_OFF_AFTER_ALERTS = False
+
+# ==========================================
+# Gate Packets
+# ==========================================
 OPEN_PACKET = b"GATE|1011011101101|111011010110111\n"
 CLOSED_PACKET = b"GATE_CLOSED|1011011101101|111011010110111\n"
 
