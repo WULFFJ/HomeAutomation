@@ -12,10 +12,10 @@ SERIAL_PORT = "/dev/ttyAMA4"
 BAUD_RATE = 9600
 
 # MQTT broker
-MQTT_BROKER = "YOURBROKERIPLOCAL"
+MQTT_BROKER = "YOURLOCALIP"
 MQTT_PORT = 8883
 MQTT_USERNAME = "Gate"
-MQTT_PASSWORD = "YOURPASSWORDHERE"
+MQTT_PASSWORD = "YOURMQTTPASSWORD"
 
 # Existing MQTT certificates
 CA_CERTS = "/path_to/ca.crt"
@@ -170,6 +170,23 @@ def main():
 
                         if now >= due:
                             if publish(client, MQTT_ON):
+                                alert_index += 1
+                                mqtt_warning = False
+
+                                print(
+                                    "MQTT ALERT",
+                                    alert_index,
+                                    "CONFIRMED",
+                                    flush=True
+                                )
+                            elif not mqtt_warning:
+                                print(
+                                    "MQTT unavailable; "
+                                    "retrying pending alert",
+                                    flush=True
+                                )
+                                mqtt_warning = True
+
                     # Optional HA sensor reset
                     if alert_index == len(ALERT_TIMES):
                         if SEND_OFF_AFTER_ALERTS and not off_sent:
@@ -205,22 +222,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-                                alert_index += 1
-                                mqtt_warning = False
-
-                                print(
-                                    "MQTT ALERT",
-                                    alert_index,
-                                    "CONFIRMED",
-                                    flush=True
-                                )
-                            elif not mqtt_warning:
-                                print(
-                                    "MQTT unavailable; "
-                                    "retrying pending alert",
-                                    flush=True
-                                )
-                                mqtt_warning = True
