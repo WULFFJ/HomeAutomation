@@ -1,0 +1,18 @@
+[Unit]
+Description=HC-12 Gate Receiver and MQTT Alerts
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=central
+Group=central
+SupplementaryGroups=dialout
+WorkingDirectory=/home/central
+ExecStart=/usr/bin/python3 -u /home/central/gaterx.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
