@@ -1,56 +1,41 @@
-### HC-12 as a Gate Receiver for HomeAssistant
+
 import time
 import serial
 import paho.mqtt.client as mqtt
 
 # ==========================================
-# USER SETTINGS - EDIT THESE
+# CONFIGURATION
 # ==========================================
 
-# Pi 5 HC-12 receiver
 SERIAL_PORT = "/dev/ttyAMA4"
 BAUD_RATE = 9600
 
-# MQTT broker
 MQTT_BROKER = "YOURLOCALIP"
 MQTT_PORT = 8883
 MQTT_USERNAME = "Gate"
-MQTT_PASSWORD = "YOURMQTTPASSWORD"
+MQTT_PASSWORD = "PUT_YOUR_PASSWORD_HERE"
 
-# Existing MQTT certificates
 CA_CERTS = "/path_to/ca.crt"
-CLIENT_CERT = "/path_to/client.crt"
+CLIENT_CERT = "/path_toe/client.crt"
 CLIENT_KEY = "/path_to/client.key"
 
-# Home Assistant MQTT sensor
-MQTT_TOPIC = "gate/gate_is_open"
-MQTT_ON = "ON"
-MQTT_OFF = "OFF"
+STATE_TOPIC = "gate/gate_is_open"
+ALERT_TOPIC = "gate/gate_alert"
 
-# Three alerts: immediately, 15 sec, 30 sec
 ALERT_TIMES = (0, 15, 30)
 
-# No new alarm until radio has been quiet
-# for this many seconds and all alerts finish
-REARM_SILENCE = 10
-
-# False = leave HA sensor ON after alerts
-# True = send OFF after all three alerts
-SEND_OFF_AFTER_ALERTS = False
-
 # ==========================================
-# VERIFIED GATE PACKET - DO NOT CHANGE
+# VERIFIED RADIO PACKETS
 # ==========================================
 
-EXPECTED_PACKET = (
-    b"GATE|1011011101101|111011010110111\n"
-)
+OPEN_PACKET = b"GATE|1011011101101|111011010110111\n"
+CLOSED_PACKET = b"GATE_CLOSED|1011011101101|111011010110111\n"
 
 # ==========================================
-# MQTT CONNECTION
+# MQTT
 # ==========================================
 
-def connect_mqtt():
+def setup_mqtt():
     client = mqtt.Client(
         client_id="gate_receiver_pi5",
         protocol=mqtt.MQTTv311
@@ -72,26 +57,21 @@ def connect_mqtt():
         max_delay=30
     )
 
-    client.connect(
-        MQTT_BROKER,
-        MQTT_PORT,
-        keepalive=60
-    )
-
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
     client.loop_start()
     return client
 
 
-def publish(client, message):
+def publish(client, topic, payload, retain=False):
     if not client.is_connected():
         return False
 
     try:
         result = client.publish(
-            MQTT_TOPIC,
-            message,
+            topic,
+            payload,
             qos=1,
-            retain=False
+            retain=retain
         )
 
         if result.rc != mqtt.MQTT_ERR_SUCCESS:
@@ -101,119 +81,123 @@ def publish(client, message):
         return result.is_published()
 
     except Exception as error:
-        print("MQTT publish error:", error, flush=True)
+        print("MQTT ERROR:", error, flush=True)
         return False
 
 
 # ==========================================
-# CONTINUOUS GATE RECEIVER
+# MAIN RECEIVER
 # ==========================================
 
 def main():
     print("Starting gate receiver", flush=True)
 
-    client = connect_mqtt()
+    client = setup_mqtt()
 
-    alarm_active = False
-    alarm_started = 0
-    last_packet_time = 0
+    gate_state = None
+    published_state = None
+
+    # Current reminder sequence
+    alert_started = None
     alert_index = 0
-    off_sent = False
-    mqtt_warning = False
 
     try:
         with serial.Serial(
             SERIAL_PORT,
             BAUD_RATE,
-            timeout=0.25
+            timeout=0.2
         ) as uart:
 
             uart.reset_input_buffer()
-
-            print(
-                "Listening for HC-12 gate packets",
-                flush=True
-            )
+            print("Listening for gate packets", flush=True)
 
             while True:
                 packet = uart.readline()
                 now = time.monotonic()
 
-                if packet == EXPECTED_PACKET:
-                    last_packet_time = now
+                if packet == OPEN_PACKET:
+                    if gate_state != "ON":
+                        print("GATE OPEN", flush=True)
 
-                    if not alarm_active:
-                        alarm_active = True
-                        alarm_started = now
+                        # A new opening starts 3 reminders
+                        alert_started = now
                         alert_index = 0
-                        off_sent = False
 
-                        print(
-                            "VALID GATE PACKET!",
-                            flush=True
-                        )
+                    gate_state = "ON"
+
+                elif packet == CLOSED_PACKET:
+                    if gate_state != "OFF":
+                        print("GATE CLOSED", flush=True)
+
+                    gate_state = "OFF"
+
+                    # Do NOT cancel existing reminders
 
                 elif packet:
                     print(
-                        "Ignored invalid packet:",
+                        "INVALID PACKET:",
                         repr(packet),
                         flush=True
                     )
 
-                # Send three scheduled alerts
-                if alarm_active:
-                    if alert_index < len(ALERT_TIMES):
-                        due = (
-                            alarm_started
-                            + ALERT_TIMES[alert_index]
+                # Publish physical gate state
+                # Resend after an MQTT reconnect
+                if not client.is_connected():
+                    published_state = None
+
+                if (
+                    gate_state is not None
+                    and gate_state != published_state
+                ):
+                    if publish(
+                        client,
+                        STATE_TOPIC,
+                        gate_state,
+                        retain=True
+                    ):
+                        published_state = gate_state
+                        print(
+                            "STATE PUBLISHED:",
+                            gate_state,
+                            flush=True
                         )
 
-                        if now >= due:
-                            if publish(client, MQTT_ON):
-                                alert_index += 1
-                                mqtt_warning = False
+                # Three reminders independent
+                # of whether gate has closed
+                if (
+                    alert_started is not None
+                    and alert_index < len(ALERT_TIMES)
+                ):
+                    due = (
+                        alert_started
+                        + ALERT_TIMES[alert_index]
+                    )
 
-                                print(
-                                    "MQTT ALERT",
-                                    alert_index,
-                                    "CONFIRMED",
-                                    flush=True
-                                )
-                            elif not mqtt_warning:
-                                print(
-                                    "MQTT unavailable; "
-                                    "retrying pending alert",
-                                    flush=True
-                                )
-                                mqtt_warning = True
+                    if time.monotonic() >= due:
+                        number = alert_index + 1
 
-                    # Optional HA sensor reset
-                    if alert_index == len(ALERT_TIMES):
-                        if SEND_OFF_AFTER_ALERTS and not off_sent:
-                            if publish(client, MQTT_OFF):
-                                off_sent = True
-                                print(
-                                    "MQTT OFF confirmed",
-                                    flush=True
-                                )
-
-                        finished = (
-                            not SEND_OFF_AFTER_ALERTS
-                            or off_sent
-                        )
-
-                        quiet = (
-                            now - last_packet_time
-                            >= REARM_SILENCE
-                        )
-
-                        if finished and quiet:
-                            alarm_active = False
-
+                        if publish(
+                            client,
+                            ALERT_TOPIC,
+                            str(number)
+                        ):
                             print(
-                                "Gate receiver rearmed",
+                                "ALERT",
+                                number,
+                                "CONFIRMED",
                                 flush=True
                             )
+                            alert_index += 1
+
+                if (
+                    alert_started is not None
+                    and alert_index == len(ALERT_TIMES)
+                ):
+                    print(
+                        "Three reminders completed",
+                        flush=True
+                    )
+                    alert_started = None
 
     finally:
         client.loop_stop()
